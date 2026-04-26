@@ -6,8 +6,8 @@ import (
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
 
-	"github.com/zmap/zmap/pkg/packet"
-	"github.com/zmap/zmap/pkg/validate"
+	"github.com/hdm/zmap-go/pkg/packet"
+	"github.com/hdm/zmap-go/pkg/validate"
 )
 
 // UDP is a generic UDP probe module. Sends a fixed payload to dstPort and
@@ -35,9 +35,9 @@ func (m *UDP) BuildProbe(srcIP, dstIP net.IP, dstPort uint16,
 		SrcMAC: srcMAC, DstMAC: dstMAC,
 		SrcIP: srcIP, DstIP: dstIP,
 		SrcPort: srcPort, DstPort: dstPort,
-		IPID:    ipID,
-		TTL:     m.TTL,
-		Payload: m.Payload,
+		IPID:       ipID,
+		TTL:        m.TTL,
+		Payload:    m.Payload,
 		SendIPOnly: m.SendIPOnly,
 	})
 	return pkt, srcPort, err

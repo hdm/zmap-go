@@ -11,7 +11,7 @@ import (
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
 
-	"github.com/zmap/zmap/pkg/raw"
+	"github.com/hdm/zmap-go/pkg/raw"
 )
 
 // ErrNoDefault is returned when no default IPv4 route could be found.

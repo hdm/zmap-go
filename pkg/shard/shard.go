@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"net/netip"
 
-	"github.com/zmap/zmap/pkg/cyclic"
+	"github.com/hdm/zmap-go/pkg/cyclic"
 )
 
 const (

@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zmap/zmap/pkg/blocklist"
-	"github.com/zmap/zmap/pkg/cyclic"
-	"github.com/zmap/zmap/pkg/iterator"
-	"github.com/zmap/zmap/pkg/ports"
-	"github.com/zmap/zmap/pkg/shard"
+	"github.com/hdm/zmap-go/pkg/blocklist"
+	"github.com/hdm/zmap-go/pkg/cyclic"
+	"github.com/hdm/zmap-go/pkg/iterator"
+	"github.com/hdm/zmap-go/pkg/ports"
+	"github.com/hdm/zmap-go/pkg/shard"
 )
 
 const version = "DEVELOPMENT"

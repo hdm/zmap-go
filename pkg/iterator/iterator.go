@@ -5,8 +5,8 @@ import (
 	"math/bits"
 	"net/netip"
 
-	"github.com/zmap/zmap/pkg/cyclic"
-	"github.com/zmap/zmap/pkg/shard"
+	"github.com/hdm/zmap-go/pkg/cyclic"
+	"github.com/hdm/zmap-go/pkg/shard"
 )
 
 type LookupIndexFunc func(index uint64) (netip.Addr, error)

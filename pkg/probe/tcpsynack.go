@@ -6,8 +6,8 @@ import (
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
 
-	"github.com/zmap/zmap/pkg/packet"
-	"github.com/zmap/zmap/pkg/validate"
+	"github.com/hdm/zmap-go/pkg/packet"
+	"github.com/hdm/zmap-go/pkg/validate"
 )
 
 // TCPSynAck implements zmap's tcp_synackscan: sends SYN+ACK and watches for

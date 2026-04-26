@@ -3,7 +3,7 @@ package probe
 import (
 	"net"
 
-	"github.com/zmap/zmap/pkg/packet"
+	"github.com/hdm/zmap-go/pkg/packet"
 )
 
 // NTP is a UDP-based NTP version 3/4 client probe (mode=3).
@@ -12,7 +12,7 @@ type NTP struct{ UDP }
 // NewNTP returns an NTP probe with the canonical client request payload.
 func NewNTP(srcPortFirst, srcPortLast uint16, ttl uint8, ipOnly bool) *NTP {
 	return &NTP{UDP: UDP{
-		Payload: packet.NTPRequestPayload(),
+		Payload:      packet.NTPRequestPayload(),
 		SrcPortFirst: srcPortFirst, SrcPortLast: srcPortLast,
 		TTL: ttl, SendIPOnly: ipOnly,
 	}}
@@ -34,7 +34,7 @@ func NewDNS(name string, qtype uint16, srcFirst, srcLast uint16, ttl uint8, ipOn
 	}
 	return &DNS{
 		UDP: UDP{
-			Payload: body,
+			Payload:      body,
 			SrcPortFirst: srcFirst, SrcPortLast: srcLast,
 			TTL: ttl, SendIPOnly: ipOnly,
 		},
@@ -54,7 +54,7 @@ func NewIcmpEchoTime(ttl uint8, ipOnly bool) *IcmpEchoTime {
 	// only checks Id and Seq, so the payload contents are advisory.
 	return &IcmpEchoTime{IcmpEcho: IcmpEcho{
 		Payload: make([]byte, 16),
-		TTL: ttl, SendIPOnly: ipOnly,
+		TTL:     ttl, SendIPOnly: ipOnly,
 	}}
 }
 func (m *IcmpEchoTime) Name() string { return "icmp_echo_time" }
@@ -64,5 +64,5 @@ var (
 	_ Module = (*NTP)(nil)
 	_ Module = (*DNS)(nil)
 	_ Module = (*IcmpEchoTime)(nil)
-	_ = net.IPv4
+	_        = net.IPv4
 )

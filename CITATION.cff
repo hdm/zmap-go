@@ -12,7 +12,7 @@ authors:
 title: "zmap"
 # TODO add version/doi once we tag and release ZMap 4.1 into package managers
 date-released: 2013-08
-url: "https://github.com/zmap/zmap"
+url: "https://github.com/hdm/zmap-go"
 preferred-citation:
   type: "conference-paper"
   authors:

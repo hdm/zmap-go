@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/zmap/zmap/pkg/cyclic"
+	"github.com/hdm/zmap-go/pkg/cyclic"
 )
 
 func TestShardIteratesValidTargets(t *testing.T) {

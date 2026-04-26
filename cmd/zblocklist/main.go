@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/zmap/zmap/pkg/bitmap"
-	"github.com/zmap/zmap/pkg/blocklist"
+	"github.com/hdm/zmap-go/pkg/bitmap"
+	"github.com/hdm/zmap-go/pkg/blocklist"
 )
 
 const (

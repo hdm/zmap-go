@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zmap/zmap/pkg/bitmap"
+	"github.com/hdm/zmap-go/pkg/bitmap"
 )
 
 type Config struct {

@@ -7,8 +7,8 @@ import (
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
 
-	"github.com/zmap/zmap/pkg/packet"
-	"github.com/zmap/zmap/pkg/validate"
+	"github.com/hdm/zmap-go/pkg/packet"
+	"github.com/hdm/zmap-go/pkg/validate"
 )
 
 // TCPSyn is the zmap "tcp_synscan" probe module.

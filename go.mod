@@ -1,6 +1,6 @@
-module github.com/zmap/zmap
+module github.com/hdm/zmap-go
 
-go 1.25.0
+go 1.25
 
 require (
 	github.com/gopacket/gopacket v1.5.0

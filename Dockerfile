@@ -46,7 +46,7 @@ RUN cd /usr/local/src \
 
 FROM ubuntu:24.04
 
-LABEL org.opencontainers.image.source="https://github.com/zmap/zmap"
+LABEL org.opencontainers.image.source="https://github.com/hdm/zmap-go"
 
 RUN apt-get update \
     && apt-get install -y \

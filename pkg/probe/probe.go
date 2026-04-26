@@ -15,7 +15,7 @@ import (
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
 
-	"github.com/zmap/zmap/pkg/validate"
+	"github.com/hdm/zmap-go/pkg/validate"
 )
 
 // Result is what a probe module emits from ValidatePacket on a successful match.

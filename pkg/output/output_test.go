@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zmap/zmap/pkg/probe"
+	"github.com/hdm/zmap-go/pkg/probe"
 )
 
 func sample() probe.Result {

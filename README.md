@@ -1,77 +1,109 @@
-ZMap: The Internet Scanner
-==========================
+zmap-go
+=======
 
-![Build Status](https://github.com/zmap/zmap/actions/workflows/cmake.yml/badge.svg)
+> ⚠️ **Experimental.** This is an unofficial, experimental port of [ZMap](https://github.com/zmap/zmap) — the fast stateless single-packet Internet scanner from the University of Michigan — from C to Go. It is not affiliated with or endorsed by the upstream ZMap project. Expect rough edges, missing features, and behaviour that diverges from upstream in subtle ways. Do not rely on it for production measurement work yet.
 
-ZMap is a fast stateless single packet network scanner designed for Internet-wide network
-surveys. On a typical desktop computer with a gigabit Ethernet connection, ZMap
-is capable of scanning the entire public IPv4 address space on a single port in 
-under 45 minutes. For example, sending a TCP SYN packet to every IPv4 address
-on port 25 to find potential SMTP servers. With a 
-10gigE connection and either [netmap](http://info.iet.unipi.it/~luigi/netmap/) or 
-[PF_RING](http://www.ntop.org/products/packet-capture/pf_ring/), ZMap can scan 
-the IPv4 address space in under 5 minutes.
+* **Upstream (canonical) ZMap, in C:** <https://github.com/zmap/zmap>
+* **This port:** Go module `github.com/hdm/zmap-go`
 
-ZMap operates on GNU/Linux, Mac OS, and BSD. ZMap currently has fully implemented
-probe modules for TCP SYN scans, ICMP, DNS queries, UPnP, BACNET, and can send a
-large number of [UDP probes](https://github.com/zmap/zmap/blob/master/examples/udp-probes/README).
-If you are looking to do more involved scans (e.g., banner grab or TLS handshake), 
-take a look at [ZGrab 2](https://github.com/zmap/zgrab2), ZMap's sister project 
-that performs stateful application-layer handshakes.
+Goals
+-----
 
-> [!CAUTION]
-> Ethical Scanning
-> 
-> Performing Internet-wide scans can have serious ethical and operational implications. While ZMap defaults to usually safe
-> settings, it is your responsibility to ensure that you're a good internet citizen. Rules of thumb are to scan at the
-> slowest speed necessary, scan slower if you're scanning a smaller target space, and provide a way for network operators
-> to opt-out. More information can be found [here](https://github.com/zmap/zmap/wiki/Getting-Started-Guide#%EF%B8%8F-warning-on-scanning-rate).
+* Pure Go, `CGO_ENABLED=0` on Linux, the BSDs, macOS, and Windows (Windows uses `gopacket/pcap`, which dynamically loads `wpcap.dll` from [Npcap](https://npcap.com) at runtime — no C toolchain needed at build time).
+* Installable with a single `go install`.
+* Embeddable as a library — every component lives under `pkg/...`.
+* Behavioural compatibility with upstream ZMap where practical (probe validation, sharding, output fields).
 
-> [!TIP]
-> We've collected some helpful tips and step-by-step walkthroughs for using ZMap in isolation or in a measurement pipeline with [ZGrab2](https://github.com/zmap/zgrab2) in our [Getting Started section](https://github.com/zmap/#getting-started).
+What works today
+----------------
 
+* Probe modules: `tcp_synscan`, `tcp_synackscan`, `icmp_echo`, `icmp_echo_time`, `udp`, `dns`, `ntp`
+* Output modules: `default` (one IP per line), `csv`, `json`
+* Sharding (`--shards` / `--shard` / `--seed`) and `--dryrun`
+* AES-128 probe validation matching upstream's per-probe seq/id derivation
+* Raw L2 send/recv: `AF_PACKET` (Linux), `/dev/bpf*` (BSD/macOS), Npcap's `wpcap.dll` (Windows)
+* Automatic gateway-MAC resolution via the OS routing table + ARP
+* Multi-threaded sender (default `runtime.NumCPU()-1` goroutines)
+* Companion tools: `ziterate`, `zblocklist`, `ztee`
 
-Using ZMap
-----------
+What is missing or different from upstream
+------------------------------------------
 
-ZMap is easy to use. A simple scan of the entire IPv4 space on TCP port 80 can be performed with the following command (requires root privileges):
+* Many specialty UDP probe modules (UPnP, BACNET, etc.) are not yet ported.
+* No `--config` file, no PF_RING / netmap, no monitor/progress UI.
+* Logger, status output, and metrics are minimal.
+* CLI flag set is a deliberate subset; behaviour may differ in edge cases.
+
+Install
+-------
+
+Requires Go 1.25+.
 
 ```sh
-sudo zmap -p 80
+go install github.com/hdm/zmap-go/cmd/zmap@latest
+go install github.com/hdm/zmap-go/cmd/ziterate@latest
+go install github.com/hdm/zmap-go/cmd/zblocklist@latest
+go install github.com/hdm/zmap-go/cmd/ztee@latest
 ```
 
+On Windows, install [Npcap](https://npcap.com) first.
+
+Sending raw L2 packets needs privileges:
+
+* Linux: `sudo` or `setcap cap_net_raw,cap_net_admin=eip $(which zmap)`
+* macOS / BSD: `sudo` (or grant access to `/dev/bpf*`)
+* Windows: run as Administrator
+
+Quick start
+-----------
+
+```sh
+# Dry-run a TCP-80 sweep so you can see what would be sent
+zmap --dryrun -O csv -p 80 -n 5 192.0.2.0/24
+
+# Real scan, JSON output
+sudo zmap -p 80 -O json -n 1000 192.0.2.0/24
+
+# DNS A-record probe
+sudo zmap -M dns --probe-args example.com -p 53 -O json 192.0.2.0/24
 ```
-$ sudo zmap -p 80
-...
- 0:00 0%; send: 5 1 p/s (185 p/s avg); recv: 0 0 p/s (0 p/s avg); drops: 0 p/s (0 p/s avg); hitrate: 0.00%
-52.8.107.196
-...
- 0:01 0%; send: 10327 10.3 Kp/s (10.1 Kp/s avg); recv: 118 118 p/s (115 p/s avg); drops: 0 p/s (0 p/s avg); hitrate: 1.14%
-````
 
-If you haven't used ZMap before, we have a step-by-step [Getting Started Guide](https://github.com/zmap/zmap/wiki/Getting-Started-Guide) that details how to perform basic scans. Documentation about all of ZMap's options and more advanced functionality can be found in our [Wiki](https://github.com/zmap/zmap/wiki). For best practices, see [Scanning Best Practices](https://github.com/zmap/zmap/wiki/Scanning-Best-Practices). 
+Run `zmap -h` for the full flag list.
 
-If you have questions, please first check our [FAQ](https://github.com/zmap/zmap/wiki/FAQ). Still have questions? Ask the community in [Github Discussions](https://github.com/zmap/zmap/discussions/categories/q-a). Please do not create an Issue for usage or support questions.
+Library use
+-----------
 
-Installation
-------------
+```go
+import (
+    "github.com/hdm/zmap-go/pkg/blocklist"
+    "github.com/hdm/zmap-go/pkg/cyclic"
+    "github.com/hdm/zmap-go/pkg/iterator"
+    "github.com/hdm/zmap-go/pkg/shard"
+)
+```
 
-The latest stable release of ZMap is [4.3.4](https://github.com/zmap/zmap/releases/tag/v4.3.4) and supports Linux, macOS, and
-BSD. See [INSTALL](INSTALL.md) for instructions on to install ZMap through a package manager or from source.
+Packages of interest:
 
-Architecture
-------------
+| Package                                  | Purpose                                          |
+| ---------------------------------------- | ------------------------------------------------ |
+| `pkg/iterator`, `pkg/shard`, `pkg/cyclic` | Cyclic-group target iterator and sharding        |
+| `pkg/blocklist`                          | CIDR allow/block-list                            |
+| `pkg/validate`                           | AES-128 probe validation                         |
+| `pkg/packet`                             | Probe-packet builders (TCP/UDP/ICMP/ARP/DNS/NTP) |
+| `pkg/probe`                              | Probe modules (send + validate)                  |
+| `pkg/output`                             | Pluggable result writers                         |
+| `pkg/raw`                                | Cross-platform raw L2 socket                     |
+| `pkg/gateway`                            | Default-route discovery + ARP MAC resolution     |
 
-More information about ZMap's architecture and a comparison with other tools can be found in these research papers:
+Ethics
+------
 
- * [ZMap: Fast Internet-Wide Scanning and its Security Applications](https://zmap.io/paper.pdf)
- * [Zippier ZMap: Internet-Wide Scanning at 10 Gbps](https://jhalderm.com/pub/papers/zmap10gig-woot14.pdf)
- * [Ten Years of ZMap](https://arxiv.org/pdf/2406.15585)
+Internet-wide scanning has real consequences. Scan at the slowest rate that meets your needs, narrow your target space, honour blocklists, and offer an opt-out. See upstream's [Scanning Best Practices](https://github.com/zmap/zmap/wiki/Scanning-Best-Practices).
 
 Citing ZMap
 -----------
 
-If you use ZMap for published research, please cite the original research paper:
+If you publish research using any descendant of ZMap (this port included), please cite the original paper:
 
 ```
 @inproceedings{durumeric2013zmap,
@@ -82,19 +114,7 @@ If you use ZMap for published research, please cite the original research paper:
 }
 ```
 
-Citing the ZMap paper helps us to track ZMap usage within the research community and to pursue funding for continued development.
+License
+-------
 
-
-License and Copyright
----------------------
-
-ZMap Copyright 2024 Regents of the University of Michigan
-
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-this file except in compliance with the License. You may obtain a copy of the
-License at http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software distributed
-under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-CONDITIONS OF ANY KIND, either express or implied. See LICENSE for the specific
-language governing permissions and limitations under the License.
+Apache License 2.0. See [LICENSE](LICENSE). The original C ZMap is © 2024 Regents of the University of Michigan; this port keeps the same license and credits the upstream authors.

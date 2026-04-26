@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zmap/zmap/pkg/constraint"
+	"github.com/hdm/zmap-go/pkg/constraint"
 )
 
 const (

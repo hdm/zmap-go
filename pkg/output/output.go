@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/zmap/zmap/pkg/probe"
+	"github.com/hdm/zmap-go/pkg/probe"
 )
 
 // Writer is the output module interface.
