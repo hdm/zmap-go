@@ -23,6 +23,14 @@ type TCPSynAck struct {
 func (m *TCPSynAck) Name() string      { return "tcp_synackscan" }
 func (m *TCPSynAck) MaxPacketLen() int { return 14 + 20 + 24 } // MSS-only
 
+func (m *TCPSynAck) Fields() []FieldDef {
+	return []FieldDef{
+		{"seq", FieldInt, "TCP sequence number of response"},
+		{"ack", FieldInt, "TCP acknowledgement number of response"},
+		{"window", FieldInt, "TCP window of response"},
+	}
+}
+
 func (m *TCPSynAck) numPorts() uint16 { return m.SrcPortLast - m.SrcPortFirst + 1 }
 
 func (m *TCPSynAck) BuildProbe(srcIP, dstIP net.IP, dstPort uint16,
@@ -60,6 +68,11 @@ func (m *TCPSynAck) ValidatePacket(p gopacket.Packet, v *validate.Validator,
 	if !VerifyDstPortMatches(ourPort, m.numPorts(), m.SrcPortFirst, t) {
 		return nil, false
 	}
+	extra := map[string]any{
+		"seq":    uint64(tcp.Seq),
+		"ack":    uint64(tcp.Ack),
+		"window": uint64(tcp.Window),
+	}
 	if tcp.RST {
 		// per zmap's synackscan validation: ack==seq+1 OR seq==ack OR seq==ack+1
 		if tcp.Ack != t[0]+1 && tcp.Seq != t[2] && tcp.Seq != t[2]+1 {
@@ -68,7 +81,9 @@ func (m *TCPSynAck) ValidatePacket(p gopacket.Packet, v *validate.Validator,
 		return &Result{
 			SrcIP: ip.SrcIP, DstIP: ip.DstIP,
 			SrcPort: remotePort, DstPort: ourPort,
+			IPID: ip.Id, TTL: ip.TTL,
 			Classification: "rst", Success: true,
+			Extra: extra,
 		}, true
 	}
 	if tcp.Ack != t[0]+1 {
@@ -77,6 +92,8 @@ func (m *TCPSynAck) ValidatePacket(p gopacket.Packet, v *validate.Validator,
 	return &Result{
 		SrcIP: ip.SrcIP, DstIP: ip.DstIP,
 		SrcPort: remotePort, DstPort: ourPort,
+		IPID: ip.Id, TTL: ip.TTL,
 		Classification: "tcp", Success: true,
+		Extra: extra,
 	}, true
 }

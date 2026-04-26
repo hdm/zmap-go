@@ -23,6 +23,14 @@ type TCPSyn struct {
 func (m *TCPSyn) Name() string      { return "tcp_synscan" }
 func (m *TCPSyn) MaxPacketLen() int { return m.Style.PacketLen() }
 
+func (m *TCPSyn) Fields() []FieldDef {
+	return []FieldDef{
+		{"seq", FieldInt, "TCP sequence number of response"},
+		{"ack", FieldInt, "TCP acknowledgement number of response"},
+		{"window", FieldInt, "TCP window of response"},
+	}
+}
+
 func (m *TCPSyn) numPorts() uint16 {
 	return m.SrcPortLast - m.SrcPortFirst + 1
 }
@@ -78,6 +86,11 @@ func (m *TCPSyn) ValidatePacket(p gopacket.Packet, v *validate.Validator,
 		return nil, false
 	}
 	// SYN+ACK: ack == seq+1
+	extra := map[string]any{
+		"seq":    uint64(tcp.Seq),
+		"ack":    uint64(tcp.Ack),
+		"window": uint64(tcp.Window),
+	}
 	if tcp.SYN && tcp.ACK {
 		if tcp.Ack != t[0]+1 {
 			return nil, false
@@ -85,7 +98,9 @@ func (m *TCPSyn) ValidatePacket(p gopacket.Packet, v *validate.Validator,
 		return &Result{
 			SrcIP: remoteIP, DstIP: ip.DstIP,
 			SrcPort: remotePort, DstPort: ourPort,
+			IPID: ip.Id, TTL: ip.TTL,
 			Classification: "synack", Success: true,
+			Extra: extra,
 		}, true
 	}
 	if tcp.RST {
@@ -95,7 +110,9 @@ func (m *TCPSyn) ValidatePacket(p gopacket.Packet, v *validate.Validator,
 		return &Result{
 			SrcIP: remoteIP, DstIP: ip.DstIP,
 			SrcPort: remotePort, DstPort: ourPort,
+			IPID: ip.Id, TTL: ip.TTL,
 			Classification: "rst", Success: false,
+			Extra: extra,
 		}, true
 	}
 	return nil, false
