@@ -142,6 +142,53 @@ func (c *bsdConn) Close() error {
 func (c *bsdConn) Interface() *net.Interface { return c.intf }
 func (c *bsdConn) LinkType() string          { return c.link }
 
+// bsdSender is a per-thread BPF transmit handle. Each sender owns its own
+// /dev/bpf* fd to avoid contention on the receive fd when many sender
+// goroutines run in parallel.
+type bsdSender struct {
+	fd     int
+	closed bool
+}
+
+func (c *bsdConn) NewSender() (Sender, error) {
+	var fd int
+	var dev string
+	for i := 0; i < 99; i++ {
+		d := fmt.Sprintf("/dev/bpf%d", i)
+		f, err := syscall.Open(d, syscall.O_RDWR, 0)
+		if err == nil {
+			fd = f
+			dev = d
+			break
+		}
+	}
+	if dev == "" {
+		// fall back to sharing the read fd if we can't grab another one
+		return &bsdSender{fd: c.fd, closed: true}, nil
+	}
+	if err := syscall.SetBpfInterface(fd, c.intf.Name); err != nil {
+		syscall.Close(fd)
+		return nil, fmt.Errorf("raw: sender SetBpfInterface: %w", err)
+	}
+	if err := syscall.SetBpfHeadercmpl(fd, 1); err != nil {
+		syscall.Close(fd)
+		return nil, fmt.Errorf("raw: sender SetBpfHeadercmpl: %w", err)
+	}
+	return &bsdSender{fd: fd}, nil
+}
+
+func (s *bsdSender) WriteTo(b []byte) (int, error) {
+	return syscall.Write(s.fd, b)
+}
+
+func (s *bsdSender) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return syscall.Close(s.fd)
+}
+
 // keep imports referenced even if unused on some BSDs
 var (
 	_ = os.Getpid

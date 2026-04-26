@@ -107,3 +107,13 @@ func (c *winConn) LinkType() string {
 	}
 	return strings.ToLower(c.h.LinkType().String())
 }
+
+// NewSender on Windows delegates to WriteTo: libpcap's WritePacketData is
+// not goroutine-safe, so all senders share the conn's mutex anyway.
+type winSender struct{ c *winConn }
+
+func (c *winConn) NewSender() (Sender, error) { return &winSender{c: c}, nil }
+func (s *winSender) WriteTo(b []byte) (int, error) {
+	return s.c.WriteTo(b)
+}
+func (s *winSender) Close() error { return nil }

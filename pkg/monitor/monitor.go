@@ -1,4 +1,3 @@
-package monitor
 // Package monitor implements zmap's progress monitor and final scan summary.
 //
 // Mirrors src/monitor.c, src/state.c, src/summary.c.

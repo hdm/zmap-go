@@ -111,5 +111,62 @@ func (c *linuxConn) Close() error {
 func (c *linuxConn) Interface() *net.Interface { return c.intf }
 func (c *linuxConn) LinkType() string          { return c.link }
 
+// linuxSender is a per-thread AF_PACKET transmit handle. It owns a raw fd
+// (not wrapped in *os.File) so WriteTo is a direct unix.Sendto syscall with
+// no internal mutex / pollDesc serialization. This is the key to scaling
+// past ~100k pps on multi-core systems where many sender goroutines would
+// otherwise contend on the receive socket's fdMutex.
+type linuxSender struct {
+	fd     int
+	sa     unix.SockaddrLinklayer
+	closed bool
+}
+
+func (c *linuxConn) NewSender() (Sender, error) {
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(ethPAll)))
+	if err != nil {
+		return nil, fmt.Errorf("raw: sender socket(AF_PACKET): %w", err)
+	}
+	// Bind so the kernel knows the egress interface; QDISC bypass below
+	// short-circuits the qdisc layer for stateless probe traffic.
+	if err := unix.Bind(fd, &unix.SockaddrLinklayer{
+		Protocol: htons(ethPAll),
+		Ifindex:  c.intf.Index,
+	}); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("raw: sender bind: %w", err)
+	}
+	// PACKET_QDISC_BYPASS (0x14): skip the qdisc layer, hand the frame
+	// straight to the driver. Available since Linux 3.14. Best-effort —
+	// failure (e.g. unprivileged or older kernel) is non-fatal.
+	const packetQdiscBypass = 20
+	_ = unix.SetsockoptInt(fd, unix.SOL_PACKET, packetQdiscBypass, 1)
+	// Larger SO_SNDBUF reduces the chance of EAGAIN under bursty load.
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, 4*1024*1024)
+	return &linuxSender{
+		fd: fd,
+		sa: unix.SockaddrLinklayer{
+			Ifindex:  c.intf.Index,
+			Halen:    uint8(len(c.intf.HardwareAddr)),
+			Protocol: htons(ethPAll),
+		},
+	}, nil
+}
+
+func (s *linuxSender) WriteTo(b []byte) (int, error) {
+	if err := unix.Sendto(s.fd, b, 0, &s.sa); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func (s *linuxSender) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return unix.Close(s.fd)
+}
+
 // silence unused import warnings on builds where syscall is not referenced.
 var _ = syscall.AF_INET

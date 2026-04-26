@@ -183,6 +183,23 @@ func run(args []string, stdout, stderr io.Writer) error {
 		if numThreads < 1 {
 			numThreads = 1
 		}
+		// On huge-core machines, more sender goroutines past a point only
+		// adds scheduling and lock contention without buying throughput
+		// (a per-thread sender already easily pushes >100k pps). Cap the
+		// default at a sensible ceiling and at ~one thread per 50k pps of
+		// requested rate. Users can override with --sender-threads.
+		if numThreads > 32 {
+			numThreads = 32
+		}
+		if conf.rate > 0 {
+			byRate := (conf.rate + 49999) / 50000
+			if byRate < 1 {
+				byRate = 1
+			}
+			if byRate < numThreads {
+				numThreads = byRate
+			}
+		}
 	}
 	if conf.dryrun {
 		numThreads = 1
@@ -409,11 +426,79 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 	if err != nil {
 		return
 	}
-	var ticker *time.Ticker
-	if rate > 0 {
-		ticker = time.NewTicker(time.Second / time.Duration(rate))
-		defer ticker.Stop()
+
+	// Each sender goroutine gets its own write-only kernel handle. This
+	// removes contention on the shared receive socket's fd lock, which is
+	// the dominant scaling bottleneck on high-core-count machines.
+	sender, serr := conn.NewSender()
+	if serr != nil {
+		// Fall back to the shared conn if a per-sender handle can't be
+		// opened (e.g. fd limits). Correctness is preserved; throughput
+		// will be lower at very high rates / thread counts.
+		sender = sharedSender{conn}
 	}
+	defer sender.Close()
+
+	// Deadline-based pacer with batching. A time.Ticker firing at sub-100µs
+	// intervals is dominated by channel/scheduler overhead and OS timer
+	// granularity, capping throughput well below the requested rate. We
+	// instead send a batch of packets, then sleep until the next deadline.
+	// The batch is sized so the inter-batch interval is in the millisecond
+	// range — coarse enough for the kernel timer, fine enough that bursts
+	// don't overrun NIC tx queues.
+	const (
+		minInterval = time.Millisecond     // target sleep granularity
+		maxInterval = 4 * time.Millisecond // cap so progress stays smooth
+	)
+	var (
+		batch    int
+		interval time.Duration
+		next     time.Time
+		paced    = rate > 0
+	)
+	if paced {
+		// Start with one millisecond's worth of packets per batch.
+		batch = rate / 1000
+		if batch < 1 {
+			batch = 1
+		}
+		interval = time.Duration(batch) * time.Second / time.Duration(rate)
+		// If the natural interval is sub-millisecond (rate > batch*1000),
+		// scale the batch up so we sleep ~1-4ms between bursts. This is
+		// the key to reaching very high pps without burning a core on
+		// timer wakeups.
+		if interval < minInterval {
+			scale := int((minInterval + interval - 1) / interval)
+			batch *= scale
+			interval *= time.Duration(scale)
+		}
+		// Clamp upward bursts so a single goroutine doesn't dominate the
+		// tx ring for too long.
+		for interval > maxInterval && batch > 1 {
+			batch /= 2
+			interval /= 2
+		}
+		next = time.Now().Add(interval)
+	}
+	inBatch := 0
+	// Counter writes are batched: senders ping a single cache line on
+	// every Add, which becomes a hot contention point with 100+ cores.
+	// Flushing once per batch (and on exit) keeps progress visible to
+	// the monitor while collapsing the per-packet atomic traffic.
+	var localSent, localFail uint64
+
+	flush := func() {
+		if localSent != 0 {
+			c.Sent.Add(localSent)
+			localSent = 0
+		}
+		if localFail != 0 {
+			c.SendFail.Add(localFail)
+			localFail = 0
+		}
+	}
+	defer flush()
+
 	srcU := ipToBE(srcIP)
 	for cur.Status == shard.OK {
 		select {
@@ -421,12 +506,23 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 			return
 		default:
 		}
-		if ticker != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
+		if paced && inBatch >= batch {
+			flush()
+			d := time.Until(next)
+			if d > 0 {
+				t := time.NewTimer(d)
+				select {
+				case <-ctx.Done():
+					t.Stop()
+					return
+				case <-t.C:
+				}
+			} else if d < -10*interval {
+				// fell badly behind (e.g. blocked on socket); reset baseline
+				next = time.Now()
 			}
+			next = next.Add(interval)
+			inBatch = 0
 		}
 		dst := cur.IP.As4()
 		dstIP := net.IPv4(dst[0], dst[1], dst[2], dst[3])
@@ -434,20 +530,27 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 		t := v.GenWords(srcU, dstU, uint32(cur.Port), 0)
 		pkt, _, err := m.BuildProbe(srcIP, dstIP, cur.Port, srcMAC, dstMAC, uint16(t[2]), t)
 		if err == nil {
-			if _, werr := conn.WriteTo(pkt); werr == nil {
-				c.Sent.Add(1)
+			if _, werr := sender.WriteTo(pkt); werr == nil {
+				localSent++
 			} else {
-				c.SendFail.Add(1)
+				localFail++
 			}
 		} else {
-			c.SendFail.Add(1)
+			localFail++
 		}
+		inBatch++
 		cur, err = s.NextTarget()
 		if err != nil {
 			return
 		}
 	}
 }
+
+// sharedSender adapts a PacketConn to the Sender interface for the rare
+// fallback path where a per-sender handle could not be opened.
+type sharedSender struct{ raw.PacketConn }
+
+func (s sharedSender) Close() error { return nil }
 
 func runReceiver(ctx context.Context, conn raw.PacketConn, m probe.Module,
 	v *validate.Validator, srcIP net.IP, spFirst, spLast uint16,

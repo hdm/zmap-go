@@ -1,4 +1,3 @@
-package filter
 // Package filter implements zmap's output-filter expression language.
 //
 // Grammar (mirrors src/expression.c + src/lexer.l + src/parser.y):
