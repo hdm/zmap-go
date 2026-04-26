@@ -314,10 +314,10 @@ func tokenize(src string) ([]token, error) {
 	return toks, nil
 }
 
-func isDigit(c byte) bool       { return c >= '0' && c <= '9' }
-func isHex(c byte) bool         { return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') }
-func isIdentStart(c byte) bool  { return c == '_' || unicode.IsLetter(rune(c)) }
-func isIdent(c byte) bool       { return isIdentStart(c) || isDigit(c) }
+func isDigit(c byte) bool      { return c >= '0' && c <= '9' }
+func isHex(c byte) bool        { return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') }
+func isIdentStart(c byte) bool { return c == '_' || unicode.IsLetter(rune(c)) }
+func isIdent(c byte) bool      { return isIdentStart(c) || isDigit(c) }
 
 // ---- parser ----
 
