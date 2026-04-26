@@ -1,9 +1,10 @@
 // cmd/zmap is a CGO-free Go port of the zmap fast Internet scanner.
 //
 // Probe modules: tcp_synscan, tcp_synackscan, icmp_echo, icmp_echo_time, udp,
-// dns, ntp.
+// dns, ntp, upnp, bacnet, ipip.
 //
-// Output modules: default (saddr per line), csv, json.
+// Output modules: default (saddr per line), csv, json. An optional
+// --output-filter expression suppresses results that do not match.
 //
 // Send paths: --dryrun (write targets to stdout) or raw L2 (AF_PACKET on
 // Linux / BPF on BSD) with up to runtime.NumCPU()-1 sender goroutines.
@@ -32,8 +33,10 @@ import (
 
 	"github.com/hdm/zmap-go/pkg/blocklist"
 	"github.com/hdm/zmap-go/pkg/cyclic"
+	"github.com/hdm/zmap-go/pkg/filter"
 	"github.com/hdm/zmap-go/pkg/gateway"
 	"github.com/hdm/zmap-go/pkg/iterator"
+	"github.com/hdm/zmap-go/pkg/monitor"
 	"github.com/hdm/zmap-go/pkg/output"
 	"github.com/hdm/zmap-go/pkg/packet"
 	"github.com/hdm/zmap-go/pkg/ports"
@@ -46,38 +49,42 @@ import (
 const version = "DEVELOPMENT"
 
 type options struct {
-	module        string
-	probeArgs     string
-	targetPorts   string
-	blocklistFile string
-	allowlistFile string
-	outputFile    string
-	outputModule  string
-	outputFields  string
-	logFile       string
-	iface         string
-	srcIP         string
-	srcMAC        string
-	gwMAC         string
-	srcPortRange  string
-	rate          int
-	maxTargets    string
-	maxResults    int
-	maxRuntime    int
-	cooldown      int
-	verbosity     int
-	senderThreads int
-	dryrun        bool
-	sendIPOnly    bool
-	seed          uint64
-	seedGiven     bool
-	shards        int
-	shard         int
-	shardGiven    bool
-	shardsGiven   bool
-	versionFlag   bool
-	destinations  []string
-	style         string
+	module         string
+	probeArgs      string
+	targetPorts    string
+	blocklistFile  string
+	allowlistFile  string
+	outputFile     string
+	outputModule   string
+	outputFields   string
+	logFile        string
+	iface          string
+	srcIP          string
+	srcMAC         string
+	gwMAC          string
+	srcPortRange   string
+	rate           int
+	maxTargets     string
+	maxResults     int
+	maxRuntime     int
+	cooldown       int
+	verbosity      int
+	senderThreads  int
+	dryrun         bool
+	sendIPOnly     bool
+	seed           uint64
+	seedGiven      bool
+	shards         int
+	shard          int
+	shardGiven     bool
+	shardsGiven    bool
+	versionFlag    bool
+	destinations   []string
+	style          string
+	outputFilter   string
+	quiet          bool
+	noSummary      bool
+	statusInterval int
 }
 
 func main() {
@@ -126,7 +133,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if outMod == "" {
 		outMod = "default"
 	}
-	w, err := output.New(outMod, out, fields)
+	var filt output.Filter
+	if conf.outputFilter != "" {
+		expr, ferr := filter.Parse(conf.outputFilter)
+		if ferr != nil {
+			return fmt.Errorf("--output-filter: %w", ferr)
+		}
+		filt = expr
+	}
+	w, err := output.NewWithConfig(out, output.Config{Module: outMod, Fields: fields, Filter: filt})
 	if err != nil {
 		return err
 	}
@@ -242,6 +257,19 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 
 	results := make(chan probe.Result, 4096)
+	counters := &monitor.Counters{}
+
+	var monitorCancel context.CancelFunc
+	monStart := time.Now()
+	if !conf.quiet {
+		interval := time.Duration(conf.statusInterval) * time.Second
+		if interval <= 0 {
+			interval = time.Second
+		}
+		var mctx context.Context
+		mctx, monitorCancel = context.WithCancel(ctx)
+		go monitor.Run(mctx, stderr, counters, interval, maxTargets)
+	}
 
 	var senderWG sync.WaitGroup
 	perThreadRate := 0
@@ -259,16 +287,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 		senderWG.Add(1)
 		go func(s *shard.Shard) {
 			defer senderWG.Done()
-			runSender(ctx, conn, s, module, v, srcIP, srcMAC, dstMAC, perThreadRate)
+			runSender(ctx, conn, s, module, v, srcIP, srcMAC, dstMAC, perThreadRate, counters)
 		}(threadShard)
 	}
 
 	var recvWG sync.WaitGroup
-	recvWG.Add(1)
 	recvCtx, stopRecv := context.WithCancel(ctx)
+	recvWG.Add(1)
 	go func() {
 		defer recvWG.Done()
-		runReceiver(recvCtx, conn, module, v, srcIP, spFirst, spLast, results)
+		runReceiver(recvCtx, conn, module, v, srcIP, spFirst, spLast, results, counters)
 	}()
 
 	go func() {
@@ -282,15 +310,30 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}()
 
 	written := 0
+	done := func() {
+		if monitorCancel != nil {
+			monitorCancel()
+		}
+		if !conf.noSummary {
+			monitor.PrintSummary(stderr, counters, time.Since(monStart))
+		}
+	}
 	for {
 		select {
 		case <-recvCtx.Done():
 			recvWG.Wait()
-			drainResults(results, w, &written, conf.maxResults)
+			drainResults(results, w, &written, conf.maxResults, counters)
+			done()
 			return nil
 		case r := <-results:
-			_ = w.WriteResult(r)
-			written++
+			if r.Success {
+				counters.Success.Add(1)
+			} else {
+				counters.Failure.Add(1)
+			}
+			if err := w.WriteResult(r); err == nil {
+				written++
+			}
 			if conf.maxResults > 0 && written >= conf.maxResults {
 				cancel()
 			}
@@ -310,12 +353,17 @@ func splitTrim(s string) []string {
 	return out
 }
 
-func drainResults(ch <-chan probe.Result, w output.Writer, written *int, max int) {
+func drainResults(ch <-chan probe.Result, w output.Writer, written *int, max int, c *monitor.Counters) {
 	for {
 		select {
 		case r, ok := <-ch:
 			if !ok {
 				return
+			}
+			if r.Success {
+				c.Success.Add(1)
+			} else {
+				c.Failure.Add(1)
 			}
 			_ = w.WriteResult(r)
 			*written++
@@ -356,7 +404,7 @@ func runDryrun(s *shard.Shard, w output.Writer, conf options, maxTargets uint64)
 }
 
 func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe.Module,
-	v *validate.Validator, srcIP net.IP, srcMAC, dstMAC net.HardwareAddr, rate int) {
+	v *validate.Validator, srcIP net.IP, srcMAC, dstMAC net.HardwareAddr, rate int, c *monitor.Counters) {
 	cur, err := s.CurrentTarget()
 	if err != nil {
 		return
@@ -386,7 +434,13 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 		t := v.GenWords(srcU, dstU, uint32(cur.Port), 0)
 		pkt, _, err := m.BuildProbe(srcIP, dstIP, cur.Port, srcMAC, dstMAC, uint16(t[2]), t)
 		if err == nil {
-			_, _ = conn.WriteTo(pkt)
+			if _, werr := conn.WriteTo(pkt); werr == nil {
+				c.Sent.Add(1)
+			} else {
+				c.SendFail.Add(1)
+			}
+		} else {
+			c.SendFail.Add(1)
 		}
 		cur, err = s.NextTarget()
 		if err != nil {
@@ -397,7 +451,7 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 
 func runReceiver(ctx context.Context, conn raw.PacketConn, m probe.Module,
 	v *validate.Validator, srcIP net.IP, spFirst, spLast uint16,
-	out chan<- probe.Result) {
+	out chan<- probe.Result, c *monitor.Counters) {
 	buf := make([]byte, 65536)
 	dec := layers.LayerTypeEthernet
 	if conn.LinkType() == "raw" || conn.LinkType() == "loop" {
@@ -424,6 +478,7 @@ func runReceiver(ctx context.Context, conn raw.PacketConn, m probe.Module,
 		if n <= 0 {
 			continue
 		}
+		c.Recv.Add(1)
 		pkt := gopacket.NewPacket(buf[:n], dec, gopacket.NoCopy)
 		if r, ok := m.ValidatePacket(pkt, v, srcIP, spFirst, spLast); ok {
 			select {
@@ -519,6 +574,39 @@ func buildModule(conf options, spFirst, spLast uint16) (probe.Module, []uint16, 
 			return nil, nil, err
 		}
 		return mod, p.Ports, nil
+	case "upnp":
+		portsStr := conf.targetPorts
+		if portsStr == "" {
+			portsStr = "1900"
+		}
+		p, err := ports.Parse(portsStr)
+		if err != nil {
+			return nil, nil, err
+		}
+		return probe.NewUPnP(spFirst, spLast, 255, conf.sendIPOnly), p.Ports, nil
+	case "bacnet":
+		portsStr := conf.targetPorts
+		if portsStr == "" {
+			portsStr = "47808"
+		}
+		p, err := ports.Parse(portsStr)
+		if err != nil {
+			return nil, nil, err
+		}
+		return probe.NewBACnet(spFirst, spLast, 255, conf.sendIPOnly), p.Ports, nil
+	case "ipip":
+		if conf.targetPorts == "" {
+			return nil, nil, errors.New("ipip requires --target-ports")
+		}
+		p, err := ports.Parse(conf.targetPorts)
+		if err != nil {
+			return nil, nil, err
+		}
+		var payload []byte
+		if strings.HasPrefix(conf.probeArgs, "text:") {
+			payload = []byte(strings.TrimPrefix(conf.probeArgs, "text:"))
+		}
+		return probe.NewIPIP(payload, spFirst, spLast, 255, conf.sendIPOnly), p.Ports, nil
 	}
 	return nil, nil, fmt.Errorf("unknown probe module %q", conf.module)
 }
@@ -723,6 +811,10 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	intv(&conf.shard, []string{"shard"}, 0, "this shard's index")
 	boolv(&conf.versionFlag, []string{"version", "V"}, false, "print version")
 	str(&conf.style, []string{"tcp-options"}, "windows", "TCP option set: windows|linux|bsd|smallest-probes")
+	str(&conf.outputFilter, []string{"output-filter"}, "", "output filter expression (e.g. 'success = 1')")
+	boolv(&conf.quiet, []string{"quiet", "q"}, false, "do not print live progress")
+	boolv(&conf.noSummary, []string{"no-summary"}, false, "do not print final summary")
+	intv(&conf.statusInterval, []string{"status-update-interval"}, 1, "seconds between status updates")
 
 	if err := flags.Parse(args); err != nil {
 		return conf, err

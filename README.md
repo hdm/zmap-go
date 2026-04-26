@@ -17,8 +17,11 @@ Goals
 What works today
 ----------------
 
-* Probe modules: `tcp_synscan`, `tcp_synackscan`, `icmp_echo`, `icmp_echo_time`, `udp`, `dns`, `ntp`
+* Probe modules: `tcp_synscan`, `tcp_synackscan`, `icmp_echo`, `icmp_echo_time`, `udp`, `dns`, `ntp`, `upnp`, `bacnet`, `ipip`
 * Output modules: `default` (one IP per line), `csv`, `json`
+* Output filter expression language (`--output-filter 'success = 1 && classification = "synack"'`)
+* Live progress monitor + scan summary on stderr (`--quiet` / `--no-summary` to disable)
+* Per-module result fields (e.g. `dns_rcode`, `dns_ancount`, `ntp_stratum`, `seq`, `ack`, `latency_us`, ...)
 * Sharding (`--shards` / `--shard` / `--seed`) and `--dryrun`
 * AES-128 probe validation matching upstream's per-probe seq/id derivation
 * Raw L2 send/recv: `AF_PACKET` (Linux), `/dev/bpf*` (BSD/macOS), Npcap's `wpcap.dll` (Windows)
@@ -29,9 +32,9 @@ What works today
 What is missing or different from upstream
 ------------------------------------------
 
-* Many specialty UDP probe modules (UPnP, BACNET, etc.) are not yet ported.
-* No `--config` file, no PF_RING / netmap, no monitor/progress UI.
-* Logger, status output, and metrics are minimal.
+* Many specialty UDP probe modules beyond `dns`/`ntp`/`upnp`/`bacnet` are not yet ported.
+* No `--config` file, no PF_RING / netmap.
+* Logger and metrics output are minimal compared to upstream.
 * CLI flag set is a deliberate subset; behaviour may differ in edge cases.
 
 Install
