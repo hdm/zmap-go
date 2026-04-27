@@ -41,6 +41,13 @@ func (m *IPIP) numPorts() uint16 { return m.SrcPortLast - m.SrcPortFirst + 1 }
 // BuildProbe builds outer-IPv4(proto=IPIP) carrying inner-IPv4(proto=UDP).
 func (m *IPIP) BuildProbe(srcIP, dstIP net.IP, dstPort uint16,
 	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
+	return m.BuildProbeInto(gopacket.NewSerializeBuffer(), srcIP, dstIP, dstPort, srcMAC, dstMAC, ipID, t)
+}
+
+// BuildProbeInto serializes the encapsulated probe into buf.
+func (m *IPIP) BuildProbeInto(buf gopacket.SerializeBuffer,
+	srcIP, dstIP net.IP, dstPort uint16,
+	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
 	srcPort := SrcPortFor(m.numPorts(), m.SrcPortFirst, t)
 
 	innerIP := &layers.IPv4{
@@ -59,7 +66,6 @@ func (m *IPIP) BuildProbe(srcIP, dstIP net.IP, dstPort uint16,
 		SrcIP:    srcIP.To4(), DstIP: dstIP.To4(),
 	}
 
-	buf := gopacket.NewSerializeBuffer()
 	pl := gopacket.Payload(m.Payload)
 	if m.SendIPOnly {
 		if err := gopacket.SerializeLayers(buf, packet.SerializeOptions, outerIP, innerIP, udp, pl); err != nil {

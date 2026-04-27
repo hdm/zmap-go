@@ -20,8 +20,16 @@ type TCPSyn struct {
 	SendIPOnly   bool
 }
 
-func (m *TCPSyn) Name() string      { return "tcp_synscan" }
-func (m *TCPSyn) MaxPacketLen() int { return m.Style.PacketLen() }
+func (m *TCPSyn) Name() string { return "tcp_synscan" }
+func (m *TCPSyn) MaxPacketLen() int {
+	n := m.Style.PacketLen()
+	// Ethernet frames smaller than 60 bytes get padded; reserve room so
+	// the fast SYN builder can write the padding in place.
+	if !m.SendIPOnly && n < 60 {
+		n = 60
+	}
+	return n
+}
 
 func (m *TCPSyn) Fields() []FieldDef {
 	return []FieldDef{
@@ -37,8 +45,39 @@ func (m *TCPSyn) numPorts() uint16 {
 
 func (m *TCPSyn) BuildProbe(srcIP, dstIP net.IP, dstPort uint16,
 	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
+	return m.BuildProbeInto(gopacket.NewSerializeBuffer(), srcIP, dstIP, dstPort, srcMAC, dstMAC, ipID, t)
+}
+
+// BuildProbeInto serializes a SYN probe into the provided buffer (which the
+// caller is expected to Clear before reuse). Avoids the per-packet
+// SerializeBuffer allocation that BuildProbe incurs.
+func (m *TCPSyn) BuildProbeInto(buf gopacket.SerializeBuffer,
+	srcIP, dstIP net.IP, dstPort uint16,
+	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
 	srcPort := SrcPortFor(m.numPorts(), m.SrcPortFirst, t)
-	pkt, err := packet.BuildSYN(packet.SynParams{
+	pkt, err := packet.BuildSYNInto(buf, packet.SynParams{
+		SrcMAC:     srcMAC,
+		DstMAC:     dstMAC,
+		SrcIP:      srcIP,
+		DstIP:      dstIP,
+		SrcPort:    srcPort,
+		DstPort:    dstPort,
+		Seq:        t[0],
+		IPID:       ipID,
+		TTL:        m.TTL,
+		Style:      m.Style,
+		SendIPOnly: m.SendIPOnly,
+	})
+	return pkt, srcPort, err
+}
+
+// BuildProbeFast writes the SYN frame straight into scratch, bypassing
+// gopacket. Implements probe.FastBuilder.
+func (m *TCPSyn) BuildProbeFast(scratch []byte,
+	srcIP, dstIP net.IP, dstPort uint16,
+	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
+	srcPort := SrcPortFor(m.numPorts(), m.SrcPortFirst, t)
+	pkt, err := packet.BuildSYNFast(scratch, packet.SynParams{
 		SrcMAC:     srcMAC,
 		DstMAC:     dstMAC,
 		SrcIP:      srcIP,

@@ -45,8 +45,20 @@ type PacketConn interface {
 // dominant bottleneck on high-core-count systems sending at hundreds of kpps.
 type Sender interface {
 	WriteTo(b []byte) (int, error)
+	// WriteBatch transmits a batch of pre-built frames in a single
+	// underlying syscall where the platform supports it (Linux:
+	// sendmmsg(2)). It returns the number of frames the kernel accepted;
+	// the remainder were dropped (the caller should treat them as send
+	// failures). Implementations that don't have a native batch syscall
+	// fall back to looping over WriteTo.
+	WriteBatch(pkts [][]byte) (int, error)
 	Close() error
 }
+
+// MaxBatch is the recommended upper bound on the number of frames passed
+// to Sender.WriteBatch. The Linux UIO_MAXIOV cap is 1024; staying well
+// below it keeps each syscall cheap and predictable.
+const MaxBatch = 256
 
 // ListenPacket opens a raw L2 socket on the named interface.
 func ListenPacket(ifname string) (PacketConn, error) {

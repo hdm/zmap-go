@@ -35,8 +35,15 @@ func (m *TCPSynAck) numPorts() uint16 { return m.SrcPortLast - m.SrcPortFirst + 
 
 func (m *TCPSynAck) BuildProbe(srcIP, dstIP net.IP, dstPort uint16,
 	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
+	return m.BuildProbeInto(gopacket.NewSerializeBuffer(), srcIP, dstIP, dstPort, srcMAC, dstMAC, ipID, t)
+}
+
+// BuildProbeInto serializes a SYN+ACK probe into the provided buffer.
+func (m *TCPSynAck) BuildProbeInto(buf gopacket.SerializeBuffer,
+	srcIP, dstIP net.IP, dstPort uint16,
+	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
 	srcPort := SrcPortFor(m.numPorts(), m.SrcPortFirst, t)
-	pkt, err := packet.BuildSYNACK(packet.SynAckParams{
+	pkt, err := packet.BuildSYNACKInto(buf, packet.SynAckParams{
 		SrcMAC: srcMAC, DstMAC: dstMAC,
 		SrcIP: srcIP, DstIP: dstIP,
 		SrcPort: srcPort, DstPort: dstPort,

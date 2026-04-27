@@ -126,8 +126,19 @@ type SynParams struct {
 	SendIPOnly     bool // skip Ethernet header (raw IP)
 }
 
-// BuildSYN serializes a SYN probe into a fresh buffer.
+// BuildSYN serializes a SYN probe into a fresh buffer. Equivalent to
+// BuildSYNInto(gopacket.NewSerializeBuffer(), p) and kept for backward
+// compatibility; high-throughput callers should prefer BuildSYNInto with a
+// pooled buffer to avoid per-packet allocation.
 func BuildSYN(p SynParams) ([]byte, error) {
+	return BuildSYNInto(gopacket.NewSerializeBuffer(), p)
+}
+
+// BuildSYNInto serializes a SYN probe into the provided SerializeBuffer.
+// The buffer must be empty (Clear was just called or it is freshly created).
+// The returned []byte aliases the buffer's storage and is invalidated by the
+// next Clear() on buf.
+func BuildSYNInto(buf gopacket.SerializeBuffer, p SynParams) ([]byte, error) {
 	if p.SrcIP.To4() == nil || p.DstIP.To4() == nil {
 		return nil, fmt.Errorf("packet: IPv4 only")
 	}
@@ -155,7 +166,6 @@ func BuildSYN(p SynParams) ([]byte, error) {
 	if err := tcp.SetNetworkLayerForChecksum(ip); err != nil {
 		return nil, err
 	}
-	buf := gopacket.NewSerializeBuffer()
 	if p.SendIPOnly {
 		if err := gopacket.SerializeLayers(buf, SerializeOptions, ip, tcp); err != nil {
 			return nil, err
@@ -185,8 +195,13 @@ type IcmpEchoParams struct {
 	SendIPOnly     bool
 }
 
-// BuildICMPEcho serializes an ICMP echo request.
+// BuildICMPEcho serializes an ICMP echo request into a fresh buffer.
 func BuildICMPEcho(p IcmpEchoParams) ([]byte, error) {
+	return BuildICMPEchoInto(gopacket.NewSerializeBuffer(), p)
+}
+
+// BuildICMPEchoInto serializes an ICMP echo request into the provided buffer.
+func BuildICMPEchoInto(buf gopacket.SerializeBuffer, p IcmpEchoParams) ([]byte, error) {
 	if p.SrcIP.To4() == nil || p.DstIP.To4() == nil {
 		return nil, fmt.Errorf("packet: IPv4 only")
 	}
@@ -209,7 +224,6 @@ func BuildICMPEcho(p IcmpEchoParams) ([]byte, error) {
 		Seq:      p.Seq,
 	}
 	payload := gopacket.Payload(p.Payload)
-	buf := gopacket.NewSerializeBuffer()
 	if p.SendIPOnly {
 		if err := gopacket.SerializeLayers(buf, SerializeOptions, ip, icmp, payload); err != nil {
 			return nil, err

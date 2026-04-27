@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,6 +86,7 @@ type options struct {
 	quiet          bool
 	noSummary      bool
 	statusInterval int
+	cpuProfile     string
 }
 
 func main() {
@@ -114,6 +116,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	if conf.shard < 0 || conf.shard >= conf.shards {
 		return errors.New("shard out of range")
+	}
+
+	if conf.cpuProfile != "" {
+		pf, err := os.Create(conf.cpuProfile)
+		if err != nil {
+			return fmt.Errorf("create cpu profile: %w", err)
+		}
+		defer pf.Close()
+		if err := pprof.StartCPUProfile(pf); err != nil {
+			return fmt.Errorf("start cpu profile: %w", err)
+		}
+		defer pprof.StopCPUProfile()
 	}
 
 	out := stdout
@@ -184,15 +198,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 			numThreads = 1
 		}
 		// On huge-core machines, more sender goroutines past a point only
-		// adds scheduling and lock contention without buying throughput
-		// (a per-thread sender already easily pushes >100k pps). Cap the
-		// default at a sensible ceiling and at ~one thread per 50k pps of
-		// requested rate. Users can override with --sender-threads.
+		// adds scheduling and lock contention without buying throughput.
+		// Each goroutine has its own AF_PACKET fd and uses sendmmsg(2) so
+		// a single sender easily pushes several hundred thousand pps;
+		// scale at ~1 thread per 200k pps of requested rate, with a hard
+		// ceiling. Users can override with --sender-threads.
 		if numThreads > 32 {
 			numThreads = 32
 		}
 		if conf.rate > 0 {
-			byRate := (conf.rate + 49999) / 50000
+			byRate := (conf.rate + 199999) / 200000
 			if byRate < 1 {
 				byRate = 1
 			}
@@ -442,10 +457,10 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 	// Deadline-based pacer with batching. A time.Ticker firing at sub-100µs
 	// intervals is dominated by channel/scheduler overhead and OS timer
 	// granularity, capping throughput well below the requested rate. We
-	// instead send a batch of packets, then sleep until the next deadline.
-	// The batch is sized so the inter-batch interval is in the millisecond
-	// range — coarse enough for the kernel timer, fine enough that bursts
-	// don't overrun NIC tx queues.
+	// instead build a batch of packets, hand them to the kernel in a single
+	// sendmmsg(2) syscall (where supported), then sleep until the next
+	// deadline. At ~1M pps the syscall transition itself dominates per-
+	// packet sendto; a 256-frame batch cuts syscall traffic 256x.
 	const (
 		minInterval = time.Millisecond     // target sleep granularity
 		maxInterval = 4 * time.Millisecond // cap so progress stays smooth
@@ -478,16 +493,29 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 			batch /= 2
 			interval /= 2
 		}
+		// Cap batch at the kernel-friendly sendmmsg ceiling.
+		if batch > raw.MaxBatch {
+			// Keep cumulative interval consistent: scaling batch down by
+			// k means scaling interval down by k too.
+			scale := batch / raw.MaxBatch
+			if scale < 1 {
+				scale = 1
+			}
+			batch /= scale
+			interval /= time.Duration(scale)
+		}
 		next = time.Now().Add(interval)
+	} else {
+		// Unpaced: send in MaxBatch-sized chunks back to back.
+		batch = raw.MaxBatch
 	}
-	inBatch := 0
+
 	// Counter writes are batched: senders ping a single cache line on
 	// every Add, which becomes a hot contention point with 100+ cores.
-	// Flushing once per batch (and on exit) keeps progress visible to
-	// the monitor while collapsing the per-packet atomic traffic.
+	// Flushing once per batch keeps progress visible to the monitor
+	// while collapsing the per-packet atomic traffic.
 	var localSent, localFail uint64
-
-	flush := func() {
+	flushCounters := func() {
 		if localSent != 0 {
 			c.Sent.Add(localSent)
 			localSent = 0
@@ -497,7 +525,78 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 			localFail = 0
 		}
 	}
-	defer flush()
+	defer flushCounters()
+
+	// Reusable batch slice — refilled in place each iteration to keep the
+	// per-packet hot path allocation-free at the sender level. Three build
+	// paths in priority order:
+	//   1. FastBuilder    — module writes raw bytes into a pooled scratch
+	//                       []byte. Zero alloc, no gopacket dispatch. This
+	//                       is the dominant path for tcp_synscan and is
+	//                       ~3-4x faster than the gopacket-based paths.
+	//   2. BufferedBuilder — module writes into a pooled
+	//                       gopacket.SerializeBuffer. Reuses the buffer's
+	//                       backing array so per-packet allocation is gone
+	//                       inside our code, but gopacket itself still
+	//                       allocates per layer.
+	//   3. BuildProbe     — fallback; allocates a fresh buffer every call.
+	batchPkts := make([][]byte, 0, batch)
+	fb, _ := m.(probe.FastBuilder)
+	bb, _ := m.(probe.BufferedBuilder)
+	maxLen := m.MaxPacketLen()
+	if maxLen < 64 {
+		maxLen = 64
+	}
+	var (
+		fastSlots [][]byte
+		bufSlots  []gopacket.SerializeBuffer
+	)
+	if fb != nil {
+		// One pre-allocated scratch buffer per batch slot; senders own
+		// their slots so no synchronization is needed.
+		fastSlots = make([][]byte, batch)
+		backing := make([]byte, batch*maxLen)
+		for i := range fastSlots {
+			fastSlots[i] = backing[i*maxLen : i*maxLen : (i+1)*maxLen]
+		}
+	} else if bb != nil {
+		bufSlots = make([]gopacket.SerializeBuffer, batch)
+		for i := range bufSlots {
+			bufSlots[i] = gopacket.NewSerializeBufferExpectedSize(0, maxLen)
+		}
+	}
+
+	flushBatch := func() {
+		// Loop over the kernel's partial-send returns. With
+		// PACKET_QDISC_BYPASS active we hand frames straight to the NIC
+		// driver; when its TX ring is full sendmmsg(2) accepts only as
+		// many as fit and returns. The previous behaviour (drop the
+		// rest) caused 70%+ "send fail" rates on small TX rings (e.g.
+		// virtio with 256 slot rings); we now retry the unsent tail
+		// with brief backoff, which lets throughput follow the actual
+		// link/driver capacity instead of our build rate.
+		idx := 0
+		const maxStallRetries = 8
+		stalls := 0
+		for idx < len(batchPkts) {
+			n, err := sender.WriteBatch(batchPkts[idx:])
+			if n > 0 {
+				localSent += uint64(n)
+				idx += n
+				stalls = 0
+				continue
+			}
+			// n == 0: hard error or EAGAIN. Brief sleep and retry.
+			stalls++
+			if stalls >= maxStallRetries || err != nil && err != syscall.EAGAIN && err != syscall.EWOULDBLOCK && err != syscall.ENOBUFS {
+				localFail += uint64(len(batchPkts) - idx)
+				break
+			}
+			time.Sleep(50 * time.Microsecond)
+		}
+		batchPkts = batchPkts[:0]
+	}
+	defer flushBatch()
 
 	srcU := ipToBE(srcIP)
 	for cur.Status == shard.OK {
@@ -506,39 +605,50 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 			return
 		default:
 		}
-		if paced && inBatch >= batch {
-			flush()
-			d := time.Until(next)
-			if d > 0 {
-				t := time.NewTimer(d)
-				select {
-				case <-ctx.Done():
-					t.Stop()
-					return
-				case <-t.C:
+		if len(batchPkts) >= batch {
+			flushBatch()
+			flushCounters()
+			if paced {
+				d := time.Until(next)
+				if d > 0 {
+					t := time.NewTimer(d)
+					select {
+					case <-ctx.Done():
+						t.Stop()
+						return
+					case <-t.C:
+					}
+				} else if d < -10*interval {
+					// fell badly behind (e.g. blocked on socket); reset baseline
+					next = time.Now()
 				}
-			} else if d < -10*interval {
-				// fell badly behind (e.g. blocked on socket); reset baseline
-				next = time.Now()
+				next = next.Add(interval)
 			}
-			next = next.Add(interval)
-			inBatch = 0
 		}
 		dst := cur.IP.As4()
 		dstIP := net.IPv4(dst[0], dst[1], dst[2], dst[3])
 		dstU := ipToBE(dstIP)
 		t := v.GenWords(srcU, dstU, uint32(cur.Port), 0)
-		pkt, _, err := m.BuildProbe(srcIP, dstIP, cur.Port, srcMAC, dstMAC, uint16(t[2]), t)
-		if err == nil {
-			if _, werr := sender.WriteTo(pkt); werr == nil {
-				localSent++
-			} else {
-				localFail++
-			}
+		var (
+			pkt  []byte
+			berr error
+		)
+		switch {
+		case fb != nil:
+			slot := fastSlots[len(batchPkts)]
+			pkt, _, berr = fb.BuildProbeFast(slot, srcIP, dstIP, cur.Port, srcMAC, dstMAC, uint16(t[2]), t)
+		case bb != nil:
+			slot := bufSlots[len(batchPkts)]
+			_ = slot.Clear()
+			pkt, _, berr = bb.BuildProbeInto(slot, srcIP, dstIP, cur.Port, srcMAC, dstMAC, uint16(t[2]), t)
+		default:
+			pkt, _, berr = m.BuildProbe(srcIP, dstIP, cur.Port, srcMAC, dstMAC, uint16(t[2]), t)
+		}
+		if berr == nil {
+			batchPkts = append(batchPkts, pkt)
 		} else {
 			localFail++
 		}
-		inBatch++
 		cur, err = s.NextTarget()
 		if err != nil {
 			return
@@ -551,6 +661,14 @@ func runSender(ctx context.Context, conn raw.PacketConn, s *shard.Shard, m probe
 type sharedSender struct{ raw.PacketConn }
 
 func (s sharedSender) Close() error { return nil }
+func (s sharedSender) WriteBatch(pkts [][]byte) (int, error) {
+	for i, p := range pkts {
+		if _, err := s.PacketConn.WriteTo(p); err != nil {
+			return i, err
+		}
+	}
+	return len(pkts), nil
+}
 
 func runReceiver(ctx context.Context, conn raw.PacketConn, m probe.Module,
 	v *validate.Validator, srcIP net.IP, spFirst, spLast uint16,
@@ -917,6 +1035,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	str(&conf.outputFilter, []string{"output-filter"}, "", "output filter expression (e.g. 'success = 1')")
 	boolv(&conf.quiet, []string{"quiet", "q"}, false, "do not print live progress")
 	boolv(&conf.noSummary, []string{"no-summary"}, false, "do not print final summary")
+	str(&conf.cpuProfile, []string{"profile"}, "", "write CPU profile to FILE during scan")
 	intv(&conf.statusInterval, []string{"status-update-interval"}, 1, "seconds between status updates")
 
 	if err := flags.Parse(args); err != nil {

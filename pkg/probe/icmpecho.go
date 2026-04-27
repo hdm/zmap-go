@@ -34,9 +34,16 @@ func (m *IcmpEcho) Fields() []FieldDef {
 	}
 }
 
-func (m *IcmpEcho) BuildProbe(srcIP, dstIP net.IP, _ uint16,
+func (m *IcmpEcho) BuildProbe(srcIP, dstIP net.IP, dport uint16,
 	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
-	pkt, err := packet.BuildICMPEcho(packet.IcmpEchoParams{
+	return m.BuildProbeInto(gopacket.NewSerializeBuffer(), srcIP, dstIP, dport, srcMAC, dstMAC, ipID, t)
+}
+
+// BuildProbeInto serializes an ICMP echo probe into the provided buffer.
+func (m *IcmpEcho) BuildProbeInto(buf gopacket.SerializeBuffer,
+	srcIP, dstIP net.IP, _ uint16,
+	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
+	pkt, err := packet.BuildICMPEchoInto(buf, packet.IcmpEchoParams{
 		SrcMAC:     srcMAC,
 		DstMAC:     dstMAC,
 		SrcIP:      srcIP,
@@ -177,6 +184,17 @@ func (m *IcmpEchoTime) BuildProbe(srcIP, dstIP net.IP, dport uint16,
 		binary.BigEndian.PutUint64(m.Payload[:8], now)
 	}
 	return m.IcmpEcho.BuildProbe(srcIP, dstIP, dport, srcMAC, dstMAC, ipID, t)
+}
+
+// BuildProbeInto stamps the timestamp and serializes into the supplied buf.
+func (m *IcmpEchoTime) BuildProbeInto(buf gopacket.SerializeBuffer,
+	srcIP, dstIP net.IP, dport uint16,
+	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
+	now := uint64(time.Now().UnixMicro())
+	if len(m.Payload) >= 8 {
+		binary.BigEndian.PutUint64(m.Payload[:8], now)
+	}
+	return m.IcmpEcho.BuildProbeInto(buf, srcIP, dstIP, dport, srcMAC, dstMAC, ipID, t)
 }
 
 func (m *IcmpEchoTime) ValidatePacket(p gopacket.Packet, v *validate.Validator,

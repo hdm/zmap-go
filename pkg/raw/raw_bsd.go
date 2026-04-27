@@ -181,6 +181,19 @@ func (s *bsdSender) WriteTo(b []byte) (int, error) {
 	return syscall.Write(s.fd, b)
 }
 
+// WriteBatch loops over WriteTo. BPF on the BSDs has no native batch send
+// equivalent to Linux's sendmmsg(2); the per-thread fd already removes the
+// shared-lock bottleneck, which is the primary scaling win on these
+// platforms.
+func (s *bsdSender) WriteBatch(pkts [][]byte) (int, error) {
+	for i, p := range pkts {
+		if _, err := syscall.Write(s.fd, p); err != nil {
+			return i, err
+		}
+	}
+	return len(pkts), nil
+}
+
 func (s *bsdSender) Close() error {
 	if s.closed {
 		return nil

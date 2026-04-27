@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -120,6 +122,17 @@ type linuxSender struct {
 	fd     int
 	sa     unix.SockaddrLinklayer
 	closed bool
+	// scratch buffers reused across WriteBatch calls to avoid allocation.
+	iovs []unix.Iovec
+	msgs []mmsghdr
+}
+
+// mmsghdr mirrors the Linux struct mmsghdr layout. The kernel expects an
+// array of these for sendmmsg(2). Total size is 64 bytes on 64-bit Linux.
+type mmsghdr struct {
+	Hdr unix.Msghdr
+	Len uint32
+	_   [4]byte
 }
 
 func (c *linuxConn) NewSender() (Sender, error) {
@@ -158,6 +171,70 @@ func (s *linuxSender) WriteTo(b []byte) (int, error) {
 		return 0, err
 	}
 	return len(b), nil
+}
+
+// WriteBatch sends up to len(pkts) frames in a single sendmmsg(2) syscall.
+// At very high pps the syscall transition itself dominates; batching cuts
+// the syscall count by len(pkts)x and is the difference between hitting
+// hundreds-of-kpps and millions-of-pps per sender.
+func (s *linuxSender) WriteBatch(pkts [][]byte) (int, error) {
+	n := len(pkts)
+	if n == 0 {
+		return 0, nil
+	}
+	if n > MaxBatch {
+		// Send in chunks to keep each syscall small and bounded.
+		total := 0
+		for off := 0; off < n; off += MaxBatch {
+			end := off + MaxBatch
+			if end > n {
+				end = n
+			}
+			m, err := s.WriteBatch(pkts[off:end])
+			total += m
+			if err != nil || m < end-off {
+				return total, err
+			}
+		}
+		return total, nil
+	}
+	if cap(s.iovs) < n {
+		s.iovs = make([]unix.Iovec, n)
+		s.msgs = make([]mmsghdr, n)
+	} else {
+		s.iovs = s.iovs[:n]
+		s.msgs = s.msgs[:n]
+	}
+	for i, p := range pkts {
+		if len(p) == 0 {
+			s.iovs[i] = unix.Iovec{}
+		} else {
+			s.iovs[i].Base = &p[0]
+			s.iovs[i].SetLen(len(p))
+		}
+		s.msgs[i] = mmsghdr{
+			Hdr: unix.Msghdr{
+				Iov: &s.iovs[i],
+			},
+		}
+		s.msgs[i].Hdr.SetIovlen(1)
+	}
+	r, _, errno := syscall.Syscall6(
+		unix.SYS_SENDMMSG,
+		uintptr(s.fd),
+		uintptr(unsafe.Pointer(&s.msgs[0])),
+		uintptr(n),
+		0, 0, 0,
+	)
+	// Keep the underlying packet slices and scratch buffers alive across
+	// the syscall; the kernel reads them via the pointers we passed.
+	runtime.KeepAlive(pkts)
+	runtime.KeepAlive(s.iovs)
+	runtime.KeepAlive(s.msgs)
+	if r == 0 && errno != 0 {
+		return 0, errno
+	}
+	return int(r), nil
 }
 
 func (s *linuxSender) Close() error {

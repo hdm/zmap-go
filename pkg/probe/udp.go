@@ -46,8 +46,15 @@ func (m *UDP) numPorts() uint16 { return m.SrcPortLast - m.SrcPortFirst + 1 }
 
 func (m *UDP) BuildProbe(srcIP, dstIP net.IP, dstPort uint16,
 	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
+	return m.BuildProbeInto(gopacket.NewSerializeBuffer(), srcIP, dstIP, dstPort, srcMAC, dstMAC, ipID, t)
+}
+
+// BuildProbeInto serializes the UDP probe into the provided buffer.
+func (m *UDP) BuildProbeInto(buf gopacket.SerializeBuffer,
+	srcIP, dstIP net.IP, dstPort uint16,
+	srcMAC, dstMAC net.HardwareAddr, ipID uint16, t [4]uint32) ([]byte, uint16, error) {
 	srcPort := SrcPortFor(m.numPorts(), m.SrcPortFirst, t)
-	pkt, err := packet.BuildUDP(packet.UDPParams{
+	pkt, err := packet.BuildUDPInto(buf, packet.UDPParams{
 		SrcMAC: srcMAC, DstMAC: dstMAC,
 		SrcIP: srcIP, DstIP: dstIP,
 		SrcPort: srcPort, DstPort: dstPort,

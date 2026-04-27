@@ -80,6 +80,32 @@ type Module interface {
 		srcPortFirst, srcPortLast uint16) (*Result, bool)
 }
 
+// BufferedBuilder is an optional interface implemented by modules that can
+// serialize directly into a caller-provided gopacket.SerializeBuffer. The
+// returned []byte aliases the buffer's storage and is invalidated by the
+// next Clear() on buf. High-throughput senders pool one buffer per batch
+// slot so the per-packet hot path allocates nothing.
+type BufferedBuilder interface {
+	BuildProbeInto(buf gopacket.SerializeBuffer,
+		srcIP, dstIP net.IP, dstPort uint16,
+		srcMAC, dstMAC net.HardwareAddr,
+		ipID uint16, t [4]uint32) ([]byte, uint16, error)
+}
+
+// FastBuilder is an optional interface implemented by modules that can
+// serialize directly into a caller-provided byte slice, bypassing gopacket
+// entirely. This is the fastest path: zero allocations, no interface
+// dispatch through gopacket.SerializableLayer. The returned slice aliases
+// scratch and is valid until the next call.
+//
+// scratch must have capacity >= the module's MaxPacketLen().
+type FastBuilder interface {
+	BuildProbeFast(scratch []byte,
+		srcIP, dstIP net.IP, dstPort uint16,
+		srcMAC, dstMAC net.HardwareAddr,
+		ipID uint16, t [4]uint32) ([]byte, uint16, error)
+}
+
 // CheckSrcPort verifies an observed source port lies in our scan's range.
 func CheckSrcPort(p uint16, first, last uint16) bool {
 	return p >= first && p <= last

@@ -141,6 +141,13 @@ func (s *Shard) NextTarget() (Target, error) {
 	if s.current == 0 {
 		return Target{Status: Done}, nil
 	}
+	// Honor the per-shard max-targets cap derived from --max-targets / -n.
+	// Without this, the iterator runs until the cyclic group wraps around,
+	// which for the full IPv4 space is effectively forever.
+	if s.State.MaxTargets > 0 && s.iterations >= s.State.MaxTargets {
+		s.current = 0
+		return Target{Status: Done}, nil
+	}
 	for {
 		candidate := s.nextElement()
 		if candidate == s.Params.Last {

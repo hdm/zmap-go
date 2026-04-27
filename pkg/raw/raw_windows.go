@@ -116,4 +116,12 @@ func (c *winConn) NewSender() (Sender, error) { return &winSender{c: c}, nil }
 func (s *winSender) WriteTo(b []byte) (int, error) {
 	return s.c.WriteTo(b)
 }
+func (s *winSender) WriteBatch(pkts [][]byte) (int, error) {
+	for i, p := range pkts {
+		if _, err := s.c.WriteTo(p); err != nil {
+			return i, err
+		}
+	}
+	return len(pkts), nil
+}
 func (s *winSender) Close() error { return nil }
