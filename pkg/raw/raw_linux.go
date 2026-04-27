@@ -136,6 +136,16 @@ type mmsghdr struct {
 }
 
 func (c *linuxConn) NewSender() (Sender, error) {
+	// If the user opted into PACKET_MMAP TX rings, try that first. On any
+	// setup failure we silently fall back to sendmmsg(2) — the ring path
+	// can fail for capability/quota reasons (mlock, mmap size) on
+	// otherwise-functional kernels and we don't want that to break the
+	// scan.
+	if PreferTxRing.Load() {
+		if s, err := newMmapSender(c.intf); err == nil {
+			return s, nil
+		}
+	}
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(ethPAll)))
 	if err != nil {
 		return nil, fmt.Errorf("raw: sender socket(AF_PACKET): %w", err)

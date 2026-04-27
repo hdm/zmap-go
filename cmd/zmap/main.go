@@ -87,6 +87,7 @@ type options struct {
 	noSummary      bool
 	statusInterval int
 	cpuProfile     string
+	mmapTxRing     bool
 }
 
 func main() {
@@ -271,6 +272,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("open raw socket on %s: %w (raw L2 sockets need privileges)", intf.Name, err)
 	}
 	defer conn.Close()
+	// Tell the raw package whether to prefer PACKET_MMAP TX rings before
+	// any sender is opened. This is read by NewSender on every call.
+	raw.PreferTxRing.Store(conf.mmapTxRing)
 
 	var dstMAC net.HardwareAddr
 	if !conf.sendIPOnly {
@@ -1036,6 +1040,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	boolv(&conf.quiet, []string{"quiet", "q"}, false, "do not print live progress")
 	boolv(&conf.noSummary, []string{"no-summary"}, false, "do not print final summary")
 	str(&conf.cpuProfile, []string{"profile"}, "", "write CPU profile to FILE during scan")
+	boolv(&conf.mmapTxRing, []string{"mmap"}, true, "use PACKET_MMAP TX ring (Linux only; falls back to sendmmsg if unavailable)")
 	intv(&conf.statusInterval, []string{"status-update-interval"}, 1, "seconds between status updates")
 
 	if err := flags.Parse(args); err != nil {

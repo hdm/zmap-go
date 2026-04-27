@@ -13,10 +13,18 @@ package raw
 import (
 	"errors"
 	"net"
+	"sync/atomic"
 )
 
 // ErrUnsupported is returned by ListenPacket on unsupported platforms.
 var ErrUnsupported = errors.New("raw: unsupported platform")
+
+// PreferTxRing, when true, hints platform implementations to use a
+// PACKET_MMAP / TPACKET TX ring (or equivalent zero-copy ring) for the
+// senders returned by PacketConn.NewSender. Currently consulted only on
+// Linux; ignored everywhere else. Implementations fall back to their
+// regular sender on any setup failure (capability, quota, kernel version).
+var PreferTxRing atomic.Bool
 
 // PacketConn is the cross-platform interface implemented by Linux and BSD
 // raw sockets.
